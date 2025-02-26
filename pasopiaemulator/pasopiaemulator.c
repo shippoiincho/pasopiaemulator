@@ -9,7 +9,9 @@
 
 //#define USE_FDC
 #define DRAW_ON_DEMAND
-//#define USE_RAMPAC
+#define USE_RAMPAC
+
+#define USE_DEBUG
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +41,10 @@
 #include "lfs.h"
 
 #include "pasopiarom.h"
+
+#ifdef USE_DEBUG
+#include "pasopiatest.h"
+#endif
 
 // VGAout configuration
 
@@ -86,6 +92,7 @@ uint32_t renderbuffer[81];  // 80x4
 
 uint32_t pacmode=0;     // PAC 1:RAMPAC 2:KANJI 3:JOYPAC
 uint32_t pacptr=0;
+uint8_t pacload=0;
 
 static const uint8_t rampac_header[16] = {
 	0xaa, 0x1f, 0x04, 0x00, 0x04, 0x80, 0x00, 0x01, 0x04, 0x04, 0x01, 0x03, 0x08, 0x00, 0x00, 0x00
@@ -229,6 +236,7 @@ volatile uint32_t save_enabled=0;
 
 unsigned char filename[16];
 unsigned char tape_filename[16];
+unsigned char rampac_filename[16];
 
 static inline unsigned char tohex(int);
 static inline unsigned char fromhex(int);
@@ -1603,6 +1611,13 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
                     keyboard_enable_irq=1;
                 }
 
+#ifdef USE_DEBUG
+            // Load TEST Program
+            if(usbkey==0x44) {
+                memcpy(mainram+testexec,testprog,sizeof(testprog));
+            }  
+#endif
+
             // Enter Menu
                 if(usbkey==0x45) {
                     prev_report=*report;
@@ -2495,28 +2510,50 @@ int main() {
             cursor_y=8;
 
             if(menuitem==2) { fbcolor=0x70; } else { fbcolor=7; } 
-            if(tape_autoclose) {
-                 video_print("C:On  ");
-            } else {
-                 video_print("C:Off ");
+            if(pacmode==0) {
+                 video_print("PAC: Disable");
+            } else if(pacmode==1) {
+                 video_print("PAC: RAM");
+            } else if(pacmode==2) {
+                video_print("PAC: KANJI");                
+            } else if(pacmode==3) {
+                video_print("PAC: JOYSTICK");                
             }
 
-            cursor_x=9;
-            cursor_y=8;
 
-            if(menuitem==2) { fbcolor=0x70; } else { fbcolor=7; } 
-            if(tape_skip) {
-                 video_print("S:On ");
-            } else {
-                 video_print("S:Off");
+            if(pacmode==1) {
+
+                cursor_x=3;
+                cursor_y=9;
+
+                if(menuitem==3) { fbcolor=0x70; } else { fbcolor=7; } 
+
+                if(pacload==0) {
+                    video_print("RAMPAC: Empty");                    
+                } else {
+                    sprintf(str,"RAMPAC: %8s",rampac_filename);
+                    video_print(str);                    
+                }
+
+                cursor_x=3;
+                cursor_y=10;
+
+                if(menuitem==4) { fbcolor=0x70; } else { fbcolor=7; } 
+
+                if(pacload==0) {
+                    video_print("NEW RAPMAC");                    
+                }
+
+                
             }
+
 
 #ifdef USE_FDC
 
             cursor_x=3;
-            cursor_y=10;
+            cursor_y=11;
 
-            if(menuitem==3) { fbcolor=0x70; } else { fbcolor=7; } 
+            if(menuitem==5) { fbcolor=0x70; } else { fbcolor=7; } 
             if(fd_drive_status[0]==0) {
                 video_print("FD: empty");
             } else {
@@ -2526,35 +2563,22 @@ int main() {
 #endif
 
             cursor_x=3;
-            cursor_y=12;
-
-            if(menuitem==4) { fbcolor=0x70; } else { fbcolor=7; } 
-            // if(colormode==0) {
-            //     video_print("Color: mk2  ");
-            // } else if (colormode==1) {
-            //     video_print("Color: P6RGB");
-            // } else {
-            //     video_print("Color: P6TV ");
-            // }
-
-
-            cursor_x=3;
             cursor_y=13;
 
-            if(menuitem==5) { fbcolor=0x70; } else { fbcolor=7; } 
+            if(menuitem==6) { fbcolor=0x70; } else { fbcolor=7; } 
             video_print("DELETE File");
 
             cursor_x=3;
             cursor_y=16;
 
-            if(menuitem==6) { fbcolor=0x70; } else { fbcolor=7; } 
+            if(menuitem==7) { fbcolor=0x70; } else { fbcolor=7; } 
             video_print("Reset");
 
 
             cursor_x=3;
             cursor_y=17;
 
-            if(menuitem==7) { fbcolor=0x70; } else { fbcolor=7; } 
+            if(menuitem==8) { fbcolor=0x70; } else { fbcolor=7; } 
             video_print("PowerCycle");
 
 // TEST
@@ -2600,15 +2624,21 @@ int main() {
                     keypressed=0;
                     if(menuitem>0) menuitem--;
 #ifndef USE_FDC
-                    if(menuitem==3) menuitem--;
+                    if(menuitem==5) menuitem--;
 #endif
+                    if((menuitem==4)&&(pacmode!=1)) {
+                        menuitem-=2;
+                    }
                 }
 
                 if(keypressed==0x51) { // Down
                     keypressed=0;
-                    if(menuitem<7) menuitem++; 
+                    if(menuitem<8) menuitem++; 
+                    if((menuitem==3)&&(pacmode!=1)) {
+                        menuitem+=2;
+                    }
 #ifndef USE_FDC
-                    if(menuitem==3) menuitem++;
+                    if(menuitem==5) menuitem++;
 #endif
                 }
 
@@ -2659,22 +2689,52 @@ int main() {
                         menuprint=0;
                     }
 
-                    if(menuitem==2) { // Tape Autoclose
+                    if(menuitem==2) { // PAC
 
-                        uint8_t flag=tape_autoclose*2+tape_skip;
+                        pacmode++;
+#ifndef USE_RAMPAC
+                        if(pacmode==1) {
+                            pacmode++;
+                        }
+#endif
 
-                        flag++;
-
-                        tape_autoclose=(flag&2)>>1;
-                        tape_skip=flag&1;
+                        if(pacmode>3) pacmode=0;
 
                         menuprint=0;
 
                     }
 
+                    if(menuitem==3) {  // RAMPAC mount/unmount
+
+                        if(pacload) { // unmount
+
+                            
+
+
+                        } else { // mount
+
+                            uint32_t res=file_selector();
+
+                            if(res==0) {
+                                memcpy(rampac_filename,filename,16);
+                                lfs_file_open(&lfs,&rampac_file,rampac_filename,LFS_O_RDWR);
+
+                            }
+
+                            //
+
+
+                        }
+
+                    }
+
+
+
+
+
 #ifdef USE_FDC
 
-                    if(menuitem==3) {  // FD
+                    if(menuitem==5) {  // FD
                         if(fd_drive_status[0]==0) {
 
                             uint32_t res=file_selector();
@@ -2704,7 +2764,7 @@ int main() {
                     // }
 
 
-                    if(menuitem==5) { // Delete
+                    if(menuitem==6) { // Delete
 
                         if((load_enabled==0)&&(save_enabled==0)) {
                             uint32_t res=enter_filename();
@@ -2718,7 +2778,7 @@ int main() {
 
                     }
 
-                    if(menuitem==6) { // Reset
+                    if(menuitem==7) { // Reset
                         menumode=0;
                         menuprint=0;
                         redraw();
@@ -2731,7 +2791,7 @@ int main() {
 
                     }
 
-                    if(menuitem==7) { // PowerCycle
+                    if(menuitem==8) { // PowerCycle
                         menumode=0;
                         menuprint=0;
 
