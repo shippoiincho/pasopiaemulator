@@ -225,7 +225,7 @@ uint8_t gamepad_select;
 //#define HW_FLASH_STORAGE_BASE   (1024*1024*16 - HW_FLASH_STORAGE_BYTES) 
 
 lfs_t lfs;
-lfs_file_t lfs_file;
+lfs_file_t lfs_file,rampac_file;
 
 #define FILE_THREHSOLD 20000000
 #define LFS_LS_FILES 9
