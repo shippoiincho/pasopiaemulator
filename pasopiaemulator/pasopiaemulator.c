@@ -1081,7 +1081,7 @@ void __not_in_flash_func(draw_framebuffer_mode0)(uint32_t line) {
         }
     }
 
-    if((scanyy<(crtc[10]&0x7))||(crtc[11]>scanyy)) {
+    if((scanyy<(crtc[10]&0x7))||(crtc[11]<scanyy)) {
             cursoraddr=0xffff;
     }
 
@@ -1210,7 +1210,7 @@ void __not_in_flash_func(draw_framebuffer_mode1)(uint32_t line) {
         }
     }
 
-    if((scanyy<(crtc[10]&0x7))||(crtc[11]>scanyy)) {
+    if((scanyy<(crtc[10]&0x7))||(crtc[11]<scanyy)) {
             cursoraddr=0xffff;
     }
 
@@ -1361,7 +1361,7 @@ void __not_in_flash_func(draw_framebuffer_mode2)(uint32_t line) {
         }
     }
 
-    if((scanyy<(crtc[10]&0x7))||(crtc[11]>scanyy)) {
+    if((scanyy<(crtc[10]&0x7))||(crtc[11]<scanyy)) {
             cursoraddr=0xffff;
     }
 
@@ -1651,6 +1651,51 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
 
 //
 
+void rampac_save(void) {
+
+    uint8_t file_match;
+    uint8_t file_data;
+
+    // compare RAM and RAMPAC File
+
+    lfs_file_rewind(&lfs,&rampac_file);
+
+    file_match=0;
+
+    for(int i=0;i<32768;i++) {
+        lfs_file_read(&lfs,&rampac_file,&file_data,1);
+        if(rampac[i]!=file_data) {
+            file_match=1;
+        }
+    }
+
+    if(file_match==0) { // NO need to save
+        return;
+    }
+
+    lfs_file_rewind(&lfs,&rampac_file);
+
+    lfs_file_write(&lfs,&rampac_file,rampac,32768);
+
+    return;
+
+}
+
+void init_rampac(void) {
+#ifdef USE_RAMPAC
+            memset(rampac, 0, sizeof(rampac));
+            memcpy(rampac, rampac_header, sizeof(rampac_header));
+            memset(rampac + 0x20, 0xff, 0x200);
+            memset(rampac + 0x300, 0xfe, 0x004);
+            memset(rampac + 0x304, 0xff, 0x0fc);
+    
+            return;
+#endif
+}
+    
+
+//
+
 static uint8_t mem_read(void *context,uint16_t address)
 {
 
@@ -1730,7 +1775,7 @@ static uint8_t io_read(void *context, uint16_t address)
                 return kanjirom[pacptr&0x1ffff];
             } else if(pacmode==3) {     // JOYPAC
 
-                if(address&0xff==0x1a) {  // JOYSTICK 1
+                if((address&0xff)==0x1a) {  // JOYSTICK 1
                     return gamepad_info;
                 } else {
                     return 0xff;
@@ -1848,7 +1893,7 @@ static void io_write(void *context, uint16_t address, uint8_t data)
 
         case 0x11: // CRTC
 
-    //    if((ioport[0x10]!=10)&&(ioport[0x10]!=11)) {
+    //    if((ioport[0x10]==10)||(ioport[0x10]==11)) {
     //    printf("[CRTC:%x:%x]",ioport[0x10],data);
     //    }
 
@@ -2148,11 +2193,13 @@ static uint8_t ird_read(void *context,uint16_t address) {
 
 }
 
+#if 0
 static void reti_callback(void *context) {
 
 
 
 }
+#endif
 
 void init_emulator(void) {
 //  setup emulator 
@@ -2187,20 +2234,6 @@ void init_emulator(void) {
     }
 
 }
-
-
-void init_rampac(void) {
-#ifdef USE_RAMPAC
-		memset(rampac, 0, sizeof(rampac));
-		memcpy(rampac, rampac_header, sizeof(rampac_header));
-		memset(rampac + 0x20, 0xff, 0x200);
-		memset(rampac + 0x300, 0xfe, 0x004);
-		memset(rampac + 0x304, 0xff, 0x0fc);
-
-        return;
-#endif
-}
-
 
 void main_core1(void) {
 
@@ -2336,7 +2369,7 @@ int main() {
     cpu.out = io_write;
 	cpu.fetch = mem_read;
     cpu.fetch_opcode = mem_read;
-    cpu.reti = reti_callback;
+//    cpu.reti = reti_callback;
     cpu.inta = ird_read;
 
     z80_power(&cpu,true);
@@ -2708,10 +2741,17 @@ int main() {
 
                         if(pacload) { // unmount
 
+                            // check rewrite is needed
                             
+                            rampac_save();
 
+                            lfs_file_close(&lfs,&rampac_file);
+
+                            pacload=0;
 
                         } else { // mount
+
+                            pacload=0;
 
                             uint32_t res=file_selector();
 
@@ -2719,18 +2759,46 @@ int main() {
                                 memcpy(rampac_filename,filename,16);
                                 lfs_file_open(&lfs,&rampac_file,rampac_filename,LFS_O_RDWR);
 
+                                // check file is RAMPAC (file size = 32KB & Initial header is correct)
+
+                                if(lfs_file_size(&lfs,&rampac_file)!=32768) {
+                                    menuprint=0;
+                                    continue;
+                                }
+
+                                lfs_file_rewind(&lfs,&rampac_file);
+                                lfs_file_read(&lfs,&rampac_file,rampac,32768);
+
+                                if(memcmp(rampac,rampac_header,16)!=0) {
+                                    menuprint=0;
+                                    continue;
+                                }
+
+                                pacload=1;
+
                             }
 
-                            //
-
-
                         }
+                        menuprint=0;
 
                     }
 
+                    if(menuitem==4) {
+                        if(pacload==0) {
+
+                            uint32_t res=enter_filename();
+
+                            if(res==0) {
+                                memcpy(rampac_filename,filename,16);
+                                lfs_file_open(&lfs,&rampac_file,rampac_filename,LFS_O_RDWR|LFS_O_CREAT);
+                                init_rampac();
+                                pacload=1;
+                            }
 
 
-
+                        }
+                        menuprint=0;
+                    }
 
 #ifdef USE_FDC
 
