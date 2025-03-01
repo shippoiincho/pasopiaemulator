@@ -11,7 +11,7 @@
 #define DRAW_ON_DEMAND
 #define USE_RAMPAC
 
-#define USE_DEBUG
+//#define USE_DEBUG
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1877,8 +1877,9 @@ static void io_write(void *context, uint16_t address, uint8_t data)
             vramptr&=0xff;
             vramptr|=(data&0x3f)<<8;
 
-            if((ioport[0x0a]&0x40)&&((data&0x40)==0)) {  // Write VRAM
-//                printf("[VW:%x:%x:%x]",vramptr,ioport[1],data);
+//            if((ioport[0x0a]&0x40)&&((data&0x40)==0)) {  // Write VRAM
+            if((data&0x40)==0) {  // Write VRAM
+                //                printf("[VW:%x:%x:%x]",vramptr,ioport[1],data);
                 vram[vramptr]=ioport[1];
                 if(data&0x80) {
                     vram9[vramptr]=1;
@@ -2622,13 +2623,14 @@ int main() {
             //      video_print(str);
 
 
+#ifdef USE_DEBUG
            cursor_x=3;
              cursor_y=18;
 //                 sprintf(str,"%04x %04x %04x %04x %04x",Z80_PC(cpu),Z80_AF(cpu),Z80_BC(cpu),Z80_DE(cpu),Z80_HL(cpu));
                  sprintf(str,"%04x %02x",Z80_PC(cpu),ioport[0xf0]);
 //                                  sprintf(str,"%04x",D7752e_GetStatus(voice_instance));
                  video_print(str);
-
+#endif
 
             // cursor_x=3;
             //  cursor_y=18;

@@ -1,10 +1,14 @@
-PASOPIA Emulator for Raspberry Pi Pico (WIP)
+PASOPIA Emulator for Raspberry Pi Pico
 ---
+
+![BASIC prompt](pictures/screenshot00.jpg)
+
 Toshiba PASOPIA PA-7010 のエミュレータです。
 以下の機能を実装しています。
 
 - メイン RAM(64KB)
 - ~~テープ~~
+- PAC2
 
 T-BASIC (Version 1.1) で起動を確認していますが、OA-BASIC や MINI-PASCAL の動作は未確認です。
 
@@ -63,12 +67,25 @@ USB キーボードに存在しないキーは以下のように割り当てて�
 LittleFS の扱い方については、
 [こちらの記事を参照](https://shippoiincho.github.io/posts/39/)してください。
 
+
+---
+# PAC2
+
+テープの動作が不安定なために、PAC2 で RAMPAC をサポートしました。
+32KB の PAC として動作します。
+
+RAMPAC は取り外し時にフラッシュに書き込みを行いますので、Pico のリセットをすると内容が消えますのでご注意ください。
+
+エミュレータの動作中に　PAC の内容を切り替えることも可能です。
+
 ---
 # 制限事項
 - 20行モードの動作は未確認です
 - CRTC を制御しているソフトは正しく表示されないことがあります
 - SOUND 命令が音痴です
 - テープの読み込みが不安定です
+- 漢字 PAC の動作は未確認です
+
 ---
 # ライセンスなど
 
@@ -79,6 +96,10 @@ LittleFS の扱い方については、
 - [VGA ライブラリ(一部改変)](https://github.com/vha3/Hunter-Adams-RP2040-Demos/tree/master/VGA_Graphics)
 - [LittleFS](https://github.com/littlefs-project/littlefs)
 - [pico-extras](https://github.com/raspberrypi/pico-extras)
+- [HID Parser(おそらくLUFAの改変)](https://gist.github.com/SelvinPL/99fd9af4566e759b6553e912b6a163f9)
 
 ---
 # Gallary
+
+![game 1](pictures/screenshot01.jpg)
+![game 2](pictures/screenshot02.jpg)
