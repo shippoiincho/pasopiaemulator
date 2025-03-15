@@ -40,7 +40,8 @@
 // Pixel color array that is DMA's to the PIO machines and
 // a pointer to the ADDRESS of this color array.
 // Note that this array is automatically initialized to all 0's (black)
-unsigned char vga_data_array[TXCOUNT];
+//unsigned char vga_data_array[TXCOUNT];
+unsigned char vga_data_array[640*5/2];
 char * address_pointer = &vga_data_array[0] ;
 
 // Address table for scanlines
@@ -123,8 +124,10 @@ void initVGA() {
     }
 
     for(int i=0;i<200;i++) {
-      vga_address_table[i*2+67] = &vga_data_array[0] + TXCOUNT_LINE * i;
-      vga_address_table[i*2+68] = &vga_data_array[0] + TXCOUNT_LINE * i;
+//      vga_address_table[i*2+67] = &vga_data_array[0] + TXCOUNT_LINE * i;
+//      vga_address_table[i*2+68] = &vga_data_array[0] + TXCOUNT_LINE * i;
+      vga_address_table[i*2+67] = &vga_data_array[0] + TXCOUNT_LINE * (i%4);
+      vga_address_table[i*2+68] = &vga_data_array[0] + TXCOUNT_LINE * (i%4);
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////

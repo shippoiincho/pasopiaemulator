@@ -1,4 +1,4 @@
-//  Toshiba PASOPIA PA-7010 emulator
+//  Toshiba PASOPIA PA-7010 & PASOPIA7 PA-7007 emulator
 //
 //  GP0: HSYNC
 //  GP1: VSYNC
@@ -7,11 +7,17 @@
 //  GP4: Green0
 //  GP6: Audio
 
+// Select Machine
+//#define MACHINE_PA7010
+#define MACHINE_PA7007
+
+
+
 //#define USE_FDC
-#define DRAW_ON_DEMAND
 #define USE_RAMPAC
 
 //#define USE_DEBUG
+#define DRAW_ON_DEMAND  // NEVER turn off
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,15 +86,26 @@ uint8_t writemap[8];
 uint8_t mainram[0x10000];
 uint8_t ioport[0x100];
 uint8_t fontrom[0x800]; // COPY FONT to RAM (for speed up)
-uint8_t vram[0x4000];
-uint8_t vram9[0x4000];
+uint8_t vram[0xc000];
+uint8_t atram[0x4000];
 uint8_t menuram[0x1000];  // 80x25 monochrome
+
+uint8_t ram_ioaccess=0;
+uint8_t lastattr=0;
+uint8_t color_palette[16];
+uint8_t color_palette_table[256];
+uint8_t color_mask_table[256];
+uint32_t nmi_enable_irq=0;
 
 #ifdef USE_RAMPAC
 uint8_t rampac[0x8000];
 #endif
 
 uint32_t renderbuffer[81];  // 80x4
+uint32_t gvrenderbuffer[81];  
+uint32_t maskbuffer[81];
+
+
 
 uint32_t pacmode=0;     // PAC 1:RAMPAC 2:KANJI 3:JOYPAC
 uint32_t pacptr=0;
@@ -115,6 +132,7 @@ uint32_t key_caps=0;
 uint32_t key_kana=0;
 uint32_t key_hirakata=0;
 uint32_t lastmodifier=0; 
+uint8_t  keysum=0xff;
 
 uint32_t keyboard_enable_irq=0;
 
@@ -125,13 +143,41 @@ volatile uint32_t sound_tick=0;
 volatile uint32_t beep_enable=0;
 uint32_t beep_interval=0;
 uint32_t beep_count=0;
+uint32_t sound_mute=0;
 
-//#define SAMPLING_FREQ 48000    
-#define SAMPLING_FREQ 22050                             // recommend for FMGEN
+#define PSG_NUMBERS 2
+
+uint16_t psg_register[8 * PSG_NUMBERS];
+uint32_t psg_osc_interval[3 * PSG_NUMBERS];
+uint32_t psg_osc_counter[3 * PSG_NUMBERS];
+
+uint32_t psg_noise_interval[PSG_NUMBERS];
+uint32_t psg_noise_counter[PSG_NUMBERS];
+uint8_t psg_noise_output[PSG_NUMBERS];
+uint32_t psg_noise_seed[PSG_NUMBERS];
+uint32_t psg_freq_write[PSG_NUMBERS];
+// uint32_t psg_envelope_interval[PSG_NUMBERS];
+// uint32_t psg_envelope_counter[PSG_NUMBERS];
+//uint32_t psg_master_clock = PSG_CLOCK2;
+//uint32_t psg_master_clock = (3579545/2);
+uint32_t psg_master_clock = 2000000;    // ???
+uint16_t psg_master_volume = 0;
+
+// TESUTO
+uint32_t psg_note_count;
+
+//const uint16_t psg_volume[] = { 0x00, 0x00, 0x01, 0x01, 0x02, 0x02, 0x03, 0x04,
+//        0x05, 0x06, 0x07, 0x08, 0x09, 0x0b, 0x0d, 0x10, 0x13, 0x17, 0x1b, 0x20,
+//        0x26, 0x2d, 0x36, 0x40, 0x4c, 0x5a, 0x6b, 0x80, 0x98, 0xb4, 0xd6, 0xff };
+
+const uint16_t psg_volume[] = { 0xFF,0xCB,0xA1,0x80,0x66,0x51,0x40,0x33,0x28,0x20,0x1A,0x14,0x10,0x0D,0x0A,0x00};
+  
+//#define SAMPLING_FREQ 22050                           
+#define SAMPLING_FREQ 15625                             // Timer tick (64us)
+
 
 #define TIME_UNIT 100000000                           // Oscillator calculation resolution = 10nsec
 #define SAMPLING_INTERVAL (TIME_UNIT/SAMPLING_FREQ) 
-#define YM2203_TIMER_INTERVAL (1000000/SAMPLING_FREQ)
 
 // Tape
 
@@ -247,6 +293,11 @@ void __not_in_flash_func(draw_framebuffer_menu)(uint32_t line);
 void __not_in_flash_func(draw_framebuffer_mode0)(uint32_t line);
 void __not_in_flash_func(draw_framebuffer_mode1)(uint32_t line);
 void __not_in_flash_func(draw_framebuffer_mode2)(uint32_t line);
+void __not_in_flash_func(draw_framebuffer7_text)(uint32_t line);
+void __not_in_flash_func(draw_framebuffer7_graphic)(uint32_t line);
+void __not_in_flash_func(mix_framebuffer7)(void);
+
+#define BASEPOS -2
 
 #ifdef DRAW_ON_DEMAND
 // *REAL* H-Sync for emulation
@@ -265,25 +316,51 @@ void __not_in_flash_func(hsync_handler)(void) {
     if((scanline%2)==0) {
         video_hsync=1;
 
-        if((scanline>=73)&&(scanline<=472)) {
+        if((scanline>=(73+BASEPOS))&&(scanline<=(472+BASEPOS))) {        
+//        if((scanline>=73)&&(scanline<=472)) {
 //        if((scanline>=81)&&(scanline<=464)) {
 
             if(menumode) {
-                draw_framebuffer_menu((scanline-73)/2);
+                draw_framebuffer_menu((scanline-(73+BASEPOS))/2);
+                memcpy(vga_data_array +320*(((scanline-(73+BASEPOS))/2)%4),renderbuffer,320);    
             } else {
+#if defined(MACHINE_PA7007)
+                if(ioport[0x8]&0x80) {
+                    draw_framebuffer7_graphic((scanline-(73+BASEPOS))/2);  // Fine Graphics                    
+                } else {
+                    draw_framebuffer7_text((scanline-(73+BASEPOS))/2);
+                }
+#else
                 if(ioport[0x8]&0x40) {
-                    draw_framebuffer_mode1((scanline-73)/2);
+                    draw_framebuffer_mode1((scanline-(73+BASEPOS))/2);
                 } else {
                     if(ioport[0x8]&0x80) {
-                        draw_framebuffer_mode2((scanline-73)/2);                    
+                        draw_framebuffer_mode2((scanline-(73+BASEPOS))/2);                    
                     } else {
-                        draw_framebuffer_mode0((scanline-73)/2);
+                        draw_framebuffer_mode0((scanline-(73+BASEPOS))/2);
                     }
                 }
+                memcpy(vga_data_array +320*(((scanline-(73+BASEPOS))/2)%4),renderbuffer,320);
+#endif
             }
-            memcpy(vga_data_array +320*((scanline-73)/2),renderbuffer,320);
-         
         }
+
+    } else {
+
+#if defined(MACHINE_PA7007)
+        if(menumode==0) {
+
+            if((scanline>=(74+BASEPOS))&&(scanline<=(473+BASEPOS))) {
+//                if((scanline>=74)&&(scanline<=473)) {
+
+
+                mix_framebuffer7();
+                memcpy(vga_data_array +320*(((scanline-(74+BASEPOS))/2)%4),renderbuffer,320);
+                         
+            }
+
+        }
+#endif
 
     }
 
@@ -345,6 +422,11 @@ bool __not_in_flash_func(ctc_handler)(struct repeating_timer *t) {
     uint8_t downcount;
     static uint8_t beep;
 
+    uint32_t beep_on,beep_volume;
+    uint8_t tone_output[3 * PSG_NUMBERS], noise_output[3 * PSG_NUMBERS];
+
+    // CTC
+
     for(int i=0;i<4;i++) {
 
         
@@ -400,22 +482,215 @@ bool __not_in_flash_func(ctc_handler)(struct repeating_timer *t) {
                 beep_count-=16;
             } else {
                 beep_count+=beep_interval;
-                beep_count-=16;
+                if(beep_count>16) {
+                    beep_count-=16;
+                } else {    // ??
+
+                }
                 if(beep) {
                     beep=0;
+#if defined(MACHINE_PA7010)
                     pwm_set_chan_level(pwm_slice_num,PWM_CHAN_A,0);
+#endif
                 } else {
                     beep=1;
+#if defined(MACHINE_PA7010)
                     pwm_set_chan_level(pwm_slice_num,PWM_CHAN_A,255);
+#endif
                 }                
             }
     }
+
+    // PSG Emulation
+#if defined(MACHINE_PA7007)
+
+    if(!sound_mute) {
+        pwm_set_chan_level(pwm_slice_num,PWM_CHAN_A,psg_master_volume);
+    }
+
+        // Run Noise generator
+
+        for (int i = 0; i < PSG_NUMBERS; i++) {
+
+            psg_noise_counter[i] += SAMPLING_INTERVAL;
+            if (psg_noise_counter[i] > psg_noise_interval[i]) {
+                psg_noise_seed[i] = (psg_noise_seed[i] >> 1)
+                        | (((psg_noise_seed[i] << 14) ^ (psg_noise_seed[i] << 16))
+                                & 0x10000);
+                psg_noise_output[i] = psg_noise_seed[i] & 1;
+                psg_noise_counter[i] -= psg_noise_interval[i];
+            }
+    
+        }
+    
+        // Run Oscillator
+    
+        for (int i = 0; i < 3 * PSG_NUMBERS; i++) {
+            pon_count = psg_osc_counter[i] += SAMPLING_INTERVAL;
+            if (pon_count < (psg_osc_interval[i] / 2)) {
+    //            tone_output[i] = psg_tone_on[i];
+                tone_output[i] = 1;
+            } else if (pon_count > psg_osc_interval[i]) {
+                psg_osc_counter[i] -= psg_osc_interval[i];
+    //            tone_output[i] = psg_tone_on[i];
+                tone_output[i] = 1;
+            } else {
+                tone_output[i] = 0;
+            }
+        }
+    
+        // Mixer
+    
+        master_volume = 0;
+        psg_note_count=0;
+    
+        for (int i = 0; i < PSG_NUMBERS; i++) {
+            for (int j = 0; j < 3; j++) {
+                if(tone_output[j+i*3]) {
+                    master_volume+=psg_volume[psg_register[j*2+i*8+1]];
+    //                master_volume+=psg_volume[32];
+                } 
+            }
+            if(psg_noise_output[i]) {
+                master_volume+=psg_volume[psg_register[7+i*8]];
+            }
+        }
+    
+        // count enable channels
+    
+        for (int i = 0; i < PSG_NUMBERS; i++) {
+            for (int j = 0; j < 4; j++) {
+                if(psg_register[j*2+i*8+1]!=0xf) {
+                        psg_note_count++;
+                }            
+            }
+        }
+    
+        if(beep_enable) {
+            psg_note_count++;
+            master_volume+=(beep*256);
+        }
+    
+    //    psg_master_volume = master_volume / (3 * PSG_NUMBERS);
+        psg_master_volume = master_volume / psg_note_count;
+
+#endif
 
     return true;
 
 }
 
+// PSG virtual registers
+// 0: CH0 Freq
+// 1: CH0 Volume
+// 6: Noise Freq
+// 7: Noise Volume
 
+void psg_write(uint32_t psg_no,uint32_t data) {
+
+    uint32_t channel,freqdiv,freq;
+
+    if(data&0x80) {
+
+        channel=(data&0x60)>>5;
+        psg_freq_write[psg_no]=0;
+
+        switch((data&0x70)>>4) {
+
+            // Frequency
+
+            case 0:
+            case 2:
+            case 4:
+
+                psg_register[psg_no*8+channel*2]=data&0xf;
+                psg_freq_write[psg_no]=channel;
+                break;
+
+            case 6:  // WIP
+                psg_register[psg_no*8+6]=data&0xf;
+                switch(data&3){
+                    case 0:
+                        freqdiv=512;
+                        break;
+                    case 1:
+                        freqdiv=1024;
+                        break;
+                    case 2:
+                        freqdiv=2048;
+                        break;
+                    case 3:
+                        freqdiv=psg_register[psg_no*8+4];
+                }
+
+
+                if(freqdiv==0) {
+                    psg_noise_interval[psg_no]=UINT32_MAX;
+                    return;
+                }
+
+                freq= psg_master_clock / freqdiv;
+                freq>>=5;
+
+                if(freq==0) {
+                    psg_noise_interval[psg_no]=UINT32_MAX; 
+                } else {
+                    psg_noise_interval[psg_no]= TIME_UNIT/freq;
+                    psg_noise_counter[psg_no]=0;
+                }
+
+                break;
+
+            // volume
+
+            case 1:
+            case 3:
+            case 5:
+            case 7:
+            
+                psg_register[psg_no*8+channel*2+1]=data&0xf;
+
+                break;
+
+        }
+
+    } else {
+
+        uint32_t noise_flag=psg_register[psg_no*8+6]&3;
+        
+        channel=psg_freq_write[psg_no];
+        psg_register[psg_no*8+channel*2]|=(data&0x3f)<<4;
+
+        freqdiv=psg_register[psg_no*8+channel*2];
+
+        if(freqdiv==0) {
+            psg_osc_interval[psg_no*3+channel]=UINT32_MAX;
+            if(noise_flag==3) {
+                psg_noise_interval[psg_no]=UINT32_MAX;
+            }
+            return;
+        }
+
+        freq= psg_master_clock / freqdiv;
+        freq>>=5;
+
+        if(freq==0) {
+            psg_osc_interval[psg_no*3+channel]=UINT32_MAX; 
+            if(noise_flag==3) {
+                psg_noise_interval[psg_no]=UINT32_MAX;
+            }
+        } else {
+            psg_osc_interval[psg_no*3+channel]= TIME_UNIT/freq;
+            psg_osc_counter[psg_no*3+channel]=0;
+            if(noise_flag==3) {
+                psg_noise_interval[psg_no]=TIME_UNIT/freq;
+                psg_noise_counter[psg_no]=0;
+            }
+
+        }
+
+    }    
+}
 
 void __not_in_flash_func(uart_handler)(void) {
 
@@ -1105,7 +1380,7 @@ void __not_in_flash_func(draw_framebuffer_mode0)(uint32_t line) {
 
         for(int i=0;i<screenwidth;i++) {
 
-            ch9=vram9[(vramaddr)&0x7ff];
+            ch9=atram[(vramaddr)&0x7ff];
             ch=vram[(vramaddr)&0x7ff];
 
             if(((ch&0xf8)==0xf8)&&(ch9==0)) { // change attribute
@@ -1134,7 +1409,7 @@ void __not_in_flash_func(draw_framebuffer_mode0)(uint32_t line) {
 
         for(int i=0;i<screenwidth;i++) {
 
-            ch9=vram9[(vramaddr)&0x7ff];
+            ch9=atram[(vramaddr)&0x7ff];
             ch=vram[(vramaddr)&0x7ff];
 
             if((ch&0xf8)==0xf8) { // change attribute
@@ -1241,7 +1516,7 @@ void __not_in_flash_func(draw_framebuffer_mode1)(uint32_t line) {
 
         for(int i=0;i<screenwidth;i++) {
 
-            ch9=vram9[((vramaddr)&0x7ff)+vramoffset];
+            ch9=atram[((vramaddr)&0x7ff)+vramoffset];
             ch=vram[((vramaddr)&0x7ff)+vramoffset];
 
             if(((ch&0xf8)==0xf8)&&(ch9==0)) { // change attribute
@@ -1273,7 +1548,7 @@ void __not_in_flash_func(draw_framebuffer_mode1)(uint32_t line) {
 
         for(int i=0;i<screenwidth;i++) {
 
-            ch9=vram9[((vramaddr)&0x7ff)+vramoffset];
+            ch9=atram[((vramaddr)&0x7ff)+vramoffset];
             ch=vram[((vramaddr)&0x7ff)+vramoffset];
 
             if(((ch&0xf8)==0xf8)&&(ch9==0)) { // change attribute
@@ -1388,7 +1663,7 @@ void __not_in_flash_func(draw_framebuffer_mode2)(uint32_t line) {
 
         for(int i=0;i<screenwidth;i++) {
 
-            ch9=vram9[((vramaddr)&0x7ff)+vramoffset];
+            ch9=atram[((vramaddr)&0x7ff)+vramoffset];
             ch=vram[((vramaddr)&0x7ff)+vramoffset];
 
             if(((ch&0xf8)==0xf8)&&(ch9==0)) { // change attribute
@@ -1420,7 +1695,7 @@ void __not_in_flash_func(draw_framebuffer_mode2)(uint32_t line) {
 
         for(int i=0;i<screenwidth;i++) {
 
-            ch9=vram9[((vramaddr)&0x7ff)+vramoffset];
+            ch9=atram[((vramaddr)&0x7ff)+vramoffset];
             ch=vram[((vramaddr)&0x7ff)+vramoffset];
 
             if(((ch&0xf8)==0xf8)&&(ch9==0)) { // change attribute
@@ -1454,6 +1729,552 @@ void __not_in_flash_func(draw_framebuffer_mode2)(uint32_t line) {
     }
 
 }
+
+// PA7007
+// TEXT mode
+// output to render buffer & gv render buffer
+void __not_in_flash_func(draw_framebuffer7_text)(uint32_t line) {
+
+    uint32_t scany,scanyy;
+    uint32_t fontw1,fontw2,fontw3;
+    uint16_t attribute,vramaddr,gvramaddr,startaddr,cursoraddr,crtcaddr;
+    uint8_t screenwidth,screenwide,screenhight,scanx,bgcolor,fontdata,blinkmode;
+    uint8_t ch,ch9,colormode,monofgcolor,datab,datar,gvcolor,gvcolor1,gvcolor2,txtcolor;
+    static uint8_t fgcolor;
+
+    // check ctrc 
+
+    startaddr=(crtc[12]<<8) + crtc[13];
+    cursoraddr=(crtc[0xe]<<8) + crtc[0xf];
+
+    screenhight=crtc[9]+1;
+
+    scany=line/8;
+    scanyy=line%8;
+
+    if(scany>=crtc[6]) {
+        memset(renderbuffer,0,320);
+        return;
+    }
+
+    // check cursor positon
+
+    if(crtc[10]&0x40) { // Blinks
+        if(crtc[10]&0x20) {
+            if((video_framecount%32)>16) {
+                cursoraddr=0xffff;
+            }
+        } else {
+            if((video_framecount%16)>8) {
+                cursoraddr=0xffff;
+            }
+        }
+    } else {
+        if(crtc[10]&0x20) { // Not displayed
+            cursoraddr=0xffff;
+        }
+    }
+
+    if((scanyy<(crtc[10]&0x7))||(crtc[11]<scanyy)) {
+            cursoraddr=0xffff;
+    }
+
+    attribute=0;
+//    bgcolor=ioport[8]&7;
+    bgcolor=8;      // Background color is always black in PA7007
+
+    if(ioport[8]&0x20) {    // 80 chars
+        screenwide=1;
+    } else {
+        screenwide=0;
+    }
+
+    screenwidth=crtc[1];
+
+    //
+
+    vramaddr=scany*(screenwidth*8)+((ioport[0xd]&0x70)>>4);
+    gvramaddr=scany*(screenwidth*8)+scanyy;
+    if((startaddr==0x400)&&(screenwide==0)) {
+        vramaddr+=0x2000;
+        gvramaddr+=0x2000;
+    }
+    crtcaddr=scany*screenwidth+startaddr;
+
+    gvramaddr&=0x3fff;
+    vramaddr&=0x3fff;
+
+    scanx=0;
+
+    colormode=ioport[0x8]&8;
+    monofgcolor=ioport[0x8]&7;
+
+    blinkmode=ioport[0xe]&0x20;
+
+    if(screenwide) {
+
+        // for TEXT
+
+        for(int i=0;i<screenwidth;i++) {
+
+            ch9=atram[vramaddr];
+            ch=vram[vramaddr];
+
+            // if(crtcaddr==cursoraddr) {
+            //     fontdata=0xff;
+            // } else {
+            //     fontdata=fontrom[ch*8+scanyy];
+            // }
+
+            // Select color
+
+            if(colormode) {
+                fgcolor=monofgcolor;
+                if((blinkmode)&&(!(ch9&4))) {
+                    fontdata=0;
+                } else {
+                    if(crtcaddr==cursoraddr) {
+                        fontdata=0xff;
+                    } else {
+                        fontdata=fontrom[ch*8+scanyy];
+                    }
+                }
+            } else {
+                fgcolor=ch9&7;
+                if(crtcaddr==cursoraddr) {
+                    fontdata=0xff;
+                } else {
+                    fontdata=fontrom[ch*8+scanyy];
+                }
+            }
+
+            if(ch9&8) fontdata=~fontdata;
+
+            fontw1=bitexpand80[fontdata*2]*fgcolor;
+            fontw3=bitexpand80[fontdata*2+1]*0xf;
+
+            datab=vram[gvramaddr+0x8000];
+            datar=vram[gvramaddr+0x4000];
+
+            fontw2=(bitexpand80[datar*2]<<1) | bitexpand80[datab*2];
+//            fontw2=bitexpand80[datab*2];
+     
+            
+            renderbuffer[scanx]=fontw1;
+            maskbuffer[scanx]=fontw3;
+            gvrenderbuffer[scanx]=fontw2;
+            scanx++;
+            
+            vramaddr+=8;
+            gvramaddr+=8;
+            crtcaddr++;
+        }
+
+    } else {
+
+        for(int i=0;i<screenwidth;i++) {
+
+            ch9=atram[vramaddr];
+            ch=vram[vramaddr];
+
+            // if(crtcaddr==cursoraddr) {
+            //     fontdata=0xff;
+            // } else {
+            //     fontdata=fontrom[ch*8+scanyy];
+            // }
+
+            if(colormode) {
+                fgcolor=monofgcolor;
+                if((blinkmode)&&(!(ch9&4))) {
+                    fontdata=0;
+                } else {
+                    if(crtcaddr==cursoraddr) {
+                        fontdata=0xff;
+                    } else {
+                        fontdata=fontrom[ch*8+scanyy];
+                    }
+                }               
+            } else {
+                fgcolor=ch9&7;
+                if(crtcaddr==cursoraddr) {
+                    fontdata=0xff;
+                } else {
+                    fontdata=fontrom[ch*8+scanyy];
+                }
+            }
+   
+            if(ch9&8) fontdata=~fontdata;
+
+            fontw1=bitexpand40[fontdata*4+1]*fgcolor;
+            fontw3=bitexpand40[fontdata*4+3]*0xf;
+            
+            datab=vram[gvramaddr+0x8000];
+            datar=vram[gvramaddr+0x4000];
+
+            fontw2=(bitexpand40[datar*4+1]<<1)+bitexpand40[datab*4+1];
+            
+            renderbuffer[scanx]=fontw1;
+            maskbuffer[scanx]=fontw3;
+            gvrenderbuffer[scanx]=fontw2;
+            scanx++;
+
+            fontw1=bitexpand40[fontdata*4]*fgcolor;
+            fontw3=bitexpand40[fontdata*4+2]*0xf;
+            fontw2=(bitexpand40[datar*4]<<1)+bitexpand40[datab*4];
+
+            renderbuffer[scanx]=fontw1;
+            maskbuffer[scanx]=fontw3;
+            gvrenderbuffer[scanx]=fontw2;
+            scanx++;
+
+            vramaddr+=8;
+            gvramaddr+=8;
+            crtcaddr++;
+        }
+
+    }
+}
+
+// PA7007
+// FineGraphic mode
+// output to render buffer & gv render buffer
+void __not_in_flash_func(draw_framebuffer7_graphic)(uint32_t line) {
+
+    uint32_t scany,scanyy;
+    uint32_t fontw1,fontw2,fontw3;
+    uint16_t attribute,vramaddr,gvramaddr,startaddr,cursoraddr,crtcaddr;
+    uint8_t screenwidth,screenwide,screenhight,scanx,bgcolor,fontdata,blinkmode;
+    uint8_t ch,ch9,colormode,monofgcolor,datab,datar,gvcolor,gvcolor1,gvcolor2,txtcolor;
+    static uint8_t fgcolor;
+
+    // check ctrc 
+
+    startaddr=(crtc[12]<<8) + crtc[13];
+    cursoraddr=(crtc[0xe]<<8) + crtc[0xf];
+
+    screenhight=crtc[9]+1;
+
+    scany=line/8;
+    scanyy=line%8;
+
+    if(scany>=crtc[6]) {
+        memset(renderbuffer,0,320);
+        return;
+    }
+
+    // check cursor positon
+
+    if(crtc[10]&0x40) { // Blinks
+        if(crtc[10]&0x20) {
+            if((video_framecount%32)>16) {
+                cursoraddr=0xffff;
+            }
+        } else {
+            if((video_framecount%16)>8) {
+                cursoraddr=0xffff;
+            }
+        }
+    } else {
+        if(crtc[10]&0x20) { // Not displayed
+            cursoraddr=0xffff;
+        }
+    }
+
+    if((scanyy<(crtc[10]&0x7))||(crtc[11]<scanyy)) {
+            cursoraddr=0xffff;
+    }
+
+    attribute=0;
+//    bgcolor=ioport[8]&7;
+    bgcolor=8;      // Background color is always black in PA7007
+
+    if(ioport[8]&0x20) {    // 80 chars
+        screenwide=1;
+    } else {
+        screenwide=0;
+    }
+
+    screenwidth=crtc[1];
+
+    //
+
+//    vramaddr=scany*(screenwidth*8)+startaddr;
+    gvramaddr=scany*(screenwidth*8)+scanyy;
+    crtcaddr=scany*screenwidth+startaddr;
+
+    if((startaddr==0x400)&&(screenwide==0)) {
+        gvramaddr+=0x2000;
+    }
+
+    gvramaddr&=0x3fff;
+//    vramaddr&=0x3fff;
+
+    scanx=0;
+
+    colormode=ioport[0x8]&8;
+    monofgcolor=ioport[0x8]&7;
+
+    blinkmode=ioport[0xe]&0x20;
+
+    if(screenwide) {
+
+        // for TEXT
+
+        for(int i=0;i<screenwidth;i++) {
+
+            ch9=atram[gvramaddr];
+            ch=vram[gvramaddr];
+
+            // if(crtcaddr==cursoraddr) {
+            //     fontdata=0xff;
+            // } else {
+            //     fontdata=fontrom[ch*8+scanyy];
+            // }
+
+            if(ch9&8) { // 3-plane graphics
+
+                if(crtcaddr==cursoraddr) {
+                    fontw1=0xffffffff;
+                    fontw3=0;
+                } else {
+                    fontw1=0;
+                    fontw3=0xffffffff;
+                }
+
+                datab=vram[gvramaddr+0x8000];
+                datar=vram[gvramaddr+0x4000];
+    
+                fontw2= (bitexpand80[ch*2] <<2) | (bitexpand80[datar*2]<<1) | bitexpand80[datab*2];
+                
+                renderbuffer[scanx]=fontw1;
+                maskbuffer[scanx]=fontw3;
+
+                gvrenderbuffer[scanx]=fontw2;
+                scanx++;
+
+            } else {
+
+                if(colormode) {
+                    fgcolor=monofgcolor;
+                    if((blinkmode)&&(!(ch9&4))) {
+                        fontdata=0;
+                    } else {
+                        if(crtcaddr==cursoraddr) {
+                            fontdata=0xff;
+                        } else {
+                            fontdata=fontrom[ch*8+scanyy];
+                        }
+                    }
+                } else {
+                    fgcolor=ch9&7;
+                    if(crtcaddr==cursoraddr) {
+                        fontdata=0xff;
+                    } else {
+                        fontdata=fontrom[ch*8+scanyy];
+                    }
+                }
+    
+                fontw1=bitexpand80[fontdata*2]*fgcolor;
+                fontw3=bitexpand80[fontdata*2+1]*0xf;
+    
+                datab=vram[gvramaddr+0x8000];
+                datar=vram[gvramaddr+0x4000];
+    
+                fontw2=(bitexpand80[datar*2]<<1) | bitexpand80[datab*2];
+    //            fontw2=bitexpand80[datab*2];
+         
+                
+                renderbuffer[scanx]=fontw1;
+                maskbuffer[scanx]=fontw3;
+                gvrenderbuffer[scanx]=fontw2;
+                scanx++;
+
+            }
+            
+//            vramaddr+=8;
+            gvramaddr+=8;
+            crtcaddr++;
+        }
+
+    } else {
+
+        for(int i=0;i<screenwidth;i++) {
+
+            ch9=atram[gvramaddr];
+            ch=vram[gvramaddr];
+
+            // if(crtcaddr==cursoraddr) {
+            //     fontdata=0xff;
+            // } else {
+            //     fontdata=fontrom[ch*8+scanyy];
+            // }
+
+            if(ch9&8) { // 3-plane graphics
+
+                if(crtcaddr==cursoraddr) {
+                    fontw1=0xffffffff;
+                    fontw3=0;
+                } else {
+                    fontw1=0;
+                    fontw3=0xffffffff;
+                }
+
+                datab=vram[gvramaddr+0x8000];
+                datar=vram[gvramaddr+0x4000];
+    
+                fontw2= (bitexpand40[ch*4+1] <<2) | (bitexpand40[datar*4+1]<<1) | bitexpand40[datab*4+1];
+                
+                renderbuffer[scanx]=fontw1;
+                maskbuffer[scanx]=fontw3;
+                gvrenderbuffer[scanx]=fontw2;
+                scanx++;
+
+                fontw2= (bitexpand40[ch*4] <<2) | (bitexpand40[datar*4]<<1) | bitexpand40[datab*4];
+                
+                renderbuffer[scanx]=fontw1;
+                maskbuffer[scanx]=fontw3;
+                gvrenderbuffer[scanx]=fontw2;
+                scanx++;
+
+
+            } else {
+
+                if(colormode) {
+                    fgcolor=monofgcolor;
+                    if((blinkmode)&&(!(ch9&4))) {
+                        fontdata=0;
+                    } else {
+                        if(crtcaddr==cursoraddr) {
+                            fontdata=0xff;
+                        } else {
+                            fontdata=fontrom[ch*8+scanyy];
+                        }
+                    }
+                } else {
+                    fgcolor=ch9&7;
+                    if(crtcaddr==cursoraddr) {
+                        fontdata=0xff;
+                    } else {
+                        fontdata=fontrom[ch*8+scanyy];
+                    }
+                }
+
+                fontw1=bitexpand40[fontdata*4+1]*fgcolor;
+                fontw3=bitexpand40[fontdata*4+3]*0xf;
+                
+                datab=vram[gvramaddr+0x8000];
+                datar=vram[gvramaddr+0x4000];
+
+                fontw2=(bitexpand40[datar*4+1]<<1)+bitexpand40[datab*4+1];
+                
+                renderbuffer[scanx]=fontw1;
+                maskbuffer[scanx]=fontw3;
+                gvrenderbuffer[scanx]=fontw2;
+                scanx++;
+
+                fontw1=bitexpand40[fontdata*4]*fgcolor;
+                fontw3=bitexpand40[fontdata*4+2]*0xf;
+                fontw2=(bitexpand40[datar*4]<<1)+bitexpand40[datab*4];
+
+                renderbuffer[scanx]=fontw1;
+                maskbuffer[scanx]=fontw3;
+                gvrenderbuffer[scanx]=fontw2;
+                scanx++;
+
+            }
+
+//            vramaddr+=8;
+            gvramaddr+=8;
+            crtcaddr++;
+        }
+
+    }
+}
+
+// TEXT & Graphics Mixing
+// Render buffer <= render buffer + gv render buffer
+void __not_in_flash_func(mix_framebuffer7)(void) {
+
+    uint32_t fontw,maskw,mixmask,pixeldata;
+    uint8_t gvcolor,gvcolor1,gvcolor2,txtcolor;
+
+    union bytemember {
+        uint32_t w;
+        uint8_t b[4];
+    };
+
+    union bytemember graphw1,graphw2,gvmask;
+
+    for(int scanx=0;scanx<80;scanx++) {
+
+        fontw=renderbuffer[scanx];
+        maskw=maskbuffer[scanx];
+        graphw1.w=gvrenderbuffer[scanx];
+
+        // // Apply color palette
+        graphw2.b[0]=color_palette_table[graphw1.b[0]];
+        graphw2.b[1]=color_palette_table[graphw1.b[1]];
+        graphw2.b[2]=color_palette_table[graphw1.b[2]];
+        graphw2.b[3]=color_palette_table[graphw1.b[3]];
+
+        // graphics mask
+        gvmask.b[0]=color_mask_table[graphw1.b[0]];
+        gvmask.b[1]=color_mask_table[graphw1.b[1]];
+        gvmask.b[2]=color_mask_table[graphw1.b[2]];
+        gvmask.b[3]=color_mask_table[graphw1.b[3]];
+
+        mixmask=maskw | gvmask.w;
+        fontw&=~gvmask.w;        
+        pixeldata = fontw + (graphw2.w & mixmask);
+
+//        pixeldata = fontw + (graphw1.w & mixmask);
+
+        renderbuffer[scanx]=pixeldata;
+
+    }
+
+}
+
+// Rebuild color palette table and gv mask table
+void rebuild_color_palette(uint8_t index,uint8_t value) {
+
+    uint8_t ttindex;
+
+    if(index&8) { // odd
+
+        index&=7;
+
+        for(int i=0;i<16;i++) {
+
+            ttindex=index+(i*0x10);
+            color_palette_table[ttindex]&=0xf0;
+            color_palette_table[ttindex]|=value;
+
+            color_mask_table[ttindex]&=0xf0;
+            if(value&8) {
+                color_mask_table[ttindex]|=0xf;
+            }
+        }
+
+    } else { // even
+
+        index&=7;
+
+        for(int i=0;i<16;i++) {
+
+            ttindex=i+(index*0x10);
+            color_palette_table[ttindex]&=0xf;
+            color_palette_table[ttindex]|=value<<4;
+
+            color_mask_table[ttindex]&=0xf;
+            if(value&8) {
+                color_mask_table[ttindex]|=0xf0;
+            }
+        }
+    }
+
+}
+
 
 
 static inline void redraw(void){
@@ -1580,6 +2401,7 @@ static inline bool find_key_in_report(hid_keyboard_report_t const *report, uint8
 void process_kbd_report(hid_keyboard_report_t const *report) {
 
     int usbkey;
+    uint8_t newkeysum;
 
     if(menumode==0) { // Emulator mode
 
@@ -1629,6 +2451,21 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
 
     prev_report=*report;
 
+    // INT for key depressed
+    // CHECK IF NEED FOR 7010
+
+//#if defined(MACHINE_PA7007)
+
+        newkeysum=0xff;
+        for(int i=0;i<12;i++) {
+            newkeysum&=keymap[i];
+        }
+        if(newkeysum!=keysum) {
+            keyboard_enable_irq=1;
+        }
+        keysum=newkeysum;
+//#endif
+
 } else {  // menu mode
 
     for(uint8_t i=0; i<6; i++)
@@ -1656,6 +2493,7 @@ void rampac_save(void) {
     uint8_t file_match;
     uint8_t file_data;
 
+#ifdef USE_RAMPAC
     // compare RAM and RAMPAC File
 
     lfs_file_rewind(&lfs,&rampac_file);
@@ -1677,6 +2515,7 @@ void rampac_save(void) {
 
     lfs_file_write(&lfs,&rampac_file,rampac,32768);
 
+#endif
     return;
 
 }
@@ -1700,15 +2539,52 @@ static uint8_t mem_read(void *context,uint16_t address)
 {
 
     if(address>=0x8000) {
+
+#if defined(MACHINE_PA7007)
+        if(address<0xc000) {
+            if(ioport[0x3c]&4) { // VRAM
+
+                if(ioport[0xe]&0x8) {   // Pallet selected
+                    return 0xff;
+                }
+
+                if(ioport[0x0c]&0x1) {  // Blue 
+                    return vram[(address&0x3fff)+0x8000];
+                }
+                if(ioport[0x0c]&0x2) {  // Red
+                    return vram[(address&0x3fff)+0x4000]; 
+                }
+                if(ioport[0x0c]&0x4) {  // Green
+//                    if(ioport[0xe]&0x10) {  // Read attribute 
+                        lastattr=atram[address&0x3fff];
+//                    }    
+                    return vram[(address&0x3fff)];
+                }
+                return 0xff;    // ?
+            }
+
+        } 
+
+//            printf("{%x:%x:%x}",Z80_PC(cpu),address,mainram[address]);
+
+
+#endif
         return mainram[address];
     }
 
     if(ioport[0x3c]&2) {    // RAM
         return mainram[address];
-
-    } else {
-        if(ioport[0x3c]&1) { // PAC
-            return 0xff;
+    } else {  // BASIC ROM or BIOS
+        if(ioport[0x3c]&1) { 
+#if defined(MACHINE_PA7007)
+            if(address<0x4000) {
+                return basicrom[address];
+            } else {
+                return biosrom[address&0x3fff]; // BIOS (7007)
+            }
+#else        
+            return 0xff;    // PAC1 (7010)
+#endif
         } else {            // BASIC
             return basicrom[address];
         }
@@ -1721,6 +2597,53 @@ static void mem_write(void *context,uint16_t address, uint8_t data)
 
     uint8_t bank,permit,bankno;
     uint16_t bankprefix;
+
+#if defined(MACHINE_PA7007)
+    if((address>=0x8000)&&(address<0xc000)) {
+        if(ioport[0x3c]&0x4) {
+            if((ioport[0xe]&0xc)==0xc) { // Write color Pallet
+
+                color_palette[address&0xf]=data&0xf;
+                rebuild_color_palette(address&0xf,data);
+
+                return;
+            }
+//            if((ioport[0xe]&8)==0) {
+                if(ioport[0xc]&0x10) {  // Blue
+                    if(ioport[0xc]&1) {
+                        vram[(address&0x3fff)+0x8000]=data;
+                    } else {
+                        vram[(address&0x3fff)+0x8000]=0xff;                        
+                    }
+                }
+                if(ioport[0xc]&0x20) {  // Red
+                    if(ioport[0xc]&2) {
+                        vram[(address&0x3fff)+0x4000]=data;                        
+                    } else {
+                        vram[(address&0x3fff)+0x4000]=0xff;
+                    }
+                }
+                if(ioport[0xc]&0x40) {  // Green
+                    if(ioport[0xc]&4) {
+                        vram[(address&0x3fff)]=data;
+                    } else {
+                        vram[(address&0x3fff)]=0xff;
+                    }
+                    if(ioport[0xe]&0x10) {
+                        atram[address&0x3fff]=lastattr;
+                    } else {
+                        atram[address&0x3fff]=ioport[0xd]&0xf;                        
+                    }
+
+                }
+                return;
+  //          }
+        }
+    }
+
+//    printf("[%x:%x:%x]",Z80_PC(cpu),address,data);
+
+#endif
 
         mainram[address]=data;
 
@@ -1738,6 +2661,15 @@ static uint8_t io_read(void *context, uint16_t address)
         // printf("[IOR:%04x:%02x]",Z80_PC(cpu),address&0xff);
         // }
 
+#if defined(MACHINE_PA7007)
+
+        if(ram_ioaccess) {         // Need check
+            ram_ioaccess=0;
+            return mainram[address];
+        }
+    
+#endif
+
     switch(address&0xff) {
 
         case 0x2: // VRAM READ
@@ -1750,10 +2682,18 @@ static uint8_t io_read(void *context, uint16_t address)
         case 0x9: // CRT info
 
             b=0x10;
-
-            if(vram9[vramptr]) b|=0x80;
+#if defined(MACHINE_PA7007)
+            if(lastattr&8) b|=0x80;
+            if(lastattr&4) b|=0x4;
+            if(lastattr&2) b|=0x2;
+            if(lastattr&1) b|=0x1;
+            if(video_hsync) b|=0x8;
+#else
+            if(atram[vramptr]) b|=0x80;
+            if(video_hsync) b|=0x40;
+#endif
             if(video_vsync) b|=0x20;
-            if(video_hsync) b!=0x40;
+
 
             return b;
 
@@ -1799,8 +2739,18 @@ static uint8_t io_read(void *context, uint16_t address)
         case 0x22:  // BANK select info
 
             b=0;
+#if defined(MACHINE_PA7007)
+
+            if(ioport[0x3c]&1) b|=0x1;
+            if(ioport[0x3c]&2) b|=0x2;
+
+#else
+
             if(ioport[0x3c]&1) b|=0x80;
             if(ioport[0x3c]&2) b|=0x40;
+
+#endif
+
 
             return b;
 
@@ -1864,6 +2814,16 @@ static void io_write(void *context, uint16_t address, uint8_t data)
     // printf("[IOW:%04x:%02x:%02x->%02x]",Z80_PC(cpu),address&0xff,ioport[address&0xff],data);
     // }
 
+#if defined(MACHINE_PA7007)
+
+    if(ram_ioaccess) {         // Need check
+        mainram[address]=data;
+        ram_ioaccess=0;
+        return;
+    }
+
+#endif
+
     switch(address&0xff) {
 
         case 0: // set low byte of VRAM ptr
@@ -1879,12 +2839,11 @@ static void io_write(void *context, uint16_t address, uint8_t data)
 
 //            if((ioport[0x0a]&0x40)&&((data&0x40)==0)) {  // Write VRAM
             if((data&0x40)==0) {  // Write VRAM
-                //                printf("[VW:%x:%x:%x]",vramptr,ioport[1],data);
                 vram[vramptr]=ioport[1];
                 if(data&0x80) {
-                    vram9[vramptr]=1;
+                    atram[vramptr]=1;
                 } else {
-                    vram9[vramptr]=0;
+                    atram[vramptr]=0;
                 }
 
             }
@@ -1892,11 +2851,50 @@ static void io_write(void *context, uint16_t address, uint8_t data)
 
             return;
 
+#if defined(MACHINE_PA7007)
+
+            case 0xc:
+            ioport[0xc]=data;
+            return;
+
+
+            case 0xd:
+            lastattr=data&0xf;
+            ioport[0xd]=data;
+            return;
+
+
+        case 0xf:   // i8255 control ?
+
+            if((data&0x80)==0) { // Bit operation
+
+                b=(data&0x0e)>>1;
+
+                if(data&1) {
+                    ioport[0xe]|= 1<<b;
+                } else {
+                    ioport[0xe]&= ~(1<<b);
+                }
+
+            }
+
+
+            return;
+
+#endif
+
         case 0x11: // CRTC
 
-    //    if((ioport[0x10]==10)||(ioport[0x10]==11)) {
+//       if((ioport[0x10]==10)||(ioport[0x10]==11)) {
+    //    if((ioport[0x10]<10)) {
     //    printf("[CRTC:%x:%x]",ioport[0x10],data);
     //    }
+    //    if((ioport[0x10]==12)||(ioport[0x10]==13)) {  // START ADDR
+    //     printf("[CRTC:%x:%x]",ioport[0x10],data);
+    //     }
+        // if((ioport[0x10]==14)||(ioport[0x10]==15)) {  // CURSOR
+        //     printf("[CRTC:%x:%x]",ioport[0x10],data);
+        // }
 
             crtc[ioport[0x10]]=data;
             return;
@@ -1941,6 +2939,16 @@ static void io_write(void *context, uint16_t address, uint8_t data)
                 tapeout(1);
             } else {
                 tapeout(0);
+            }
+
+            if(data&2) {    // Sound MUTE
+                sound_mute=1;                
+            } else {
+                sound_mute=0;
+            }
+
+            if(data&1) {    // RESET NMI
+                nmi_enable_irq=0;
             }
 
             ioport[0x20]=data;
@@ -2087,7 +3095,7 @@ static void io_write(void *context, uint16_t address, uint8_t data)
 
             b=address&3;
 
-            // if(b==0) {
+            // if(b==1) {
             // printf("[T:%d:%x]",b,data);
             // }
 
@@ -2130,13 +3138,36 @@ static void io_write(void *context, uint16_t address, uint8_t data)
 
             return;
 
+#if defined(MACHINE_PA7007)
+
+            case 0x3a:  // DPSG 1
+                psg_write(0,data);
+                return;
+    
+            case 0x3b:  // DPSG 2
+                psg_write(1,data);
+                return;
+#endif
+
+
         case 0x3c: // Bank select & reset
 
             ioport[address&0xff]=data;
+
+#if defined(MACHINE_PA7007)
+
+            if(data&8) {    // VRAM acess via IO port
+                ram_ioaccess=1;
+            }
+#endif
+
+#if defined(MACHINE_PA7070)
             if(data&4) {    // RESET
                 z80_power(&cpu,true);
             }
-            return;
+#endif
+
+return;
 
         default:
             ioport[address&0xff]=data;
@@ -2151,7 +3182,6 @@ static uint8_t ird_read(void *context,uint16_t address) {
 
 //  printf("INT:%d:%d:%d:%02x:%02x\n\r",cpu.im,pioa_enable_irq,pio_irq_processing,cpu.i,pioa[0]);
 
-
     if(cpu.im==2) { // mode 2
 
 //  printf("[INT:%x:%d:%d:%d]",Z80_PC(cpu),subcpu_ird,vsync_enable_irq,timer_enable_irq);
@@ -2161,6 +3191,12 @@ static uint8_t ird_read(void *context,uint16_t address) {
             ctc_enable_irq[0]=0;
             z80_int(&cpu,FALSE);
             return ctc_irq_vector[0];   
+        }
+
+        if(ctc_enable_irq[1]) {
+            ctc_enable_irq[1]=0;
+            z80_int(&cpu,FALSE);
+            return ctc_irq_vector[1];   
         }
 
         if(ctc_enable_irq[2]) {
@@ -2233,6 +3269,17 @@ void init_emulator(void) {
         ctc_timeconstant[i]=0;
         ctc_enable_irq[i]=0;
     }
+
+    keysum=0xff;
+
+#if defined(MACHINE_PA7007)
+
+    memset(color_mask_table,0,256);
+    memset(color_palette_table,0,256);
+
+//    ioport[0x3c]=1;
+    nmi_enable_irq=1;
+#endif
 
 }
 
@@ -2409,6 +3456,14 @@ int main() {
 //             video_print(str);
 // #endif
 
+#if defined(MACHINE_PA7007)
+
+        if(nmi_enable_irq) {
+            nmi_enable_irq=0;
+            z80_nmi(&cpu);
+        }
+
+#endif
 
         if((keyboard_enable_irq)&&(piob[2]&0x80)) {
 //            printf(" INT ");
@@ -2419,6 +3474,13 @@ int main() {
 
         if(ctc_enable_irq[0]) {
 //            printf(" INT C0 ");
+            if((cpu.iff1)&&(cpu.im==2)) {
+                z80_int(&cpu,TRUE);
+            }
+        }
+
+        if(ctc_enable_irq[1]) {
+            //            printf(" INT C1 ");
             if((cpu.iff1)&&(cpu.im==2)) {
                 z80_int(&cpu,TRUE);
             }
@@ -2739,6 +3801,7 @@ int main() {
 
                     }
 
+#ifdef USE_RAMPAC
                     if(menuitem==3) {  // RAMPAC mount/unmount
 
                         if(pacload) { // unmount
@@ -2784,7 +3847,6 @@ int main() {
                         menuprint=0;
 
                     }
-
                     if(menuitem==4) {
                         if(pacload==0) {
 
@@ -2801,6 +3863,7 @@ int main() {
                         }
                         menuprint=0;
                     }
+#endif
 
 #ifdef USE_FDC
 

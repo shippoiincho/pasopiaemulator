@@ -1,16 +1,25 @@
-PASOPIA Emulator for Raspberry Pi Pico
+PASOPIA/PASOPIA 7 Emulator for Raspberry Pi Pico
 ---
 
 ![BASIC prompt](pictures/screenshot00.jpg)
 
-Toshiba PASOPIA PA-7010 のエミュレータです。
+Toshiba PASOPIA PA-7010 および PASOPIA7 PA-7007 のエミュレータです。
 以下の機能を実装しています。
 
 - メイン RAM(64KB)
 - ~~テープ~~
 - PAC2
+- PSG (PASPOIA7)
 
 T-BASIC (Version 1.1) で起動を確認していますが、OA-BASIC や MINI-PASCAL の動作は未確認です。
+
+`pasopiaemulator.c` の冒頭で機種を選択してください。
+
+```
+#define MACHINE_PA7010
+//#define MACHINE_PA7007
+```
+
 
 ---
 # 配線
@@ -40,6 +49,8 @@ picotool を使う場合は、以下の通りで行けると思います。
 ```
 $ picotool load -v -x tbasic.rom -t bin -o 0x10050000
 $ picotool load -v -x font.rom -t bin -o 0x10058000
+$ picotool load -v -x bios.rom -t bin -o 0x1005c000     (PASOPIA7 BIOS)
+$ picotool load -v -x kanji.rom -t bin -o 0x10060000     (KANJI PAC)
 ```
 
 ROM を書き込んだのちに `prebuild` ディレクトリ以下にある uf2 ファイルを書き込むと起動します。
@@ -82,7 +93,8 @@ RAMPAC は取り外し時にフラッシュに書き込みを行いますので�
 # 制限事項
 - 20行モードの動作は未確認です
 - CRTC を制御しているソフトは正しく表示されないことがあります
-- SOUND 命令が音痴です
+- SOUND 命令が音痴です(PA7010)
+- 80桁モードの表示が不安定です
 - テープの読み込みが不安定です
 - 漢字 PAC の動作は未確認です
 
