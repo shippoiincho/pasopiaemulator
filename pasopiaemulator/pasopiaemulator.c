@@ -2543,22 +2543,22 @@ static uint8_t mem_read(void *context,uint16_t address)
             if(ioport[0x3c]&4) { // VRAM
 
                 if(ioport[0xe]&0x8) {   // Pallet selected
-                    return 0xff;
+                    return 0;
                 }
 
-                if(ioport[0x0c]&0x1) {  // Blue 
+                if(ioport[0x0c]==0x11) {  // Blue 
                     return vram[(address&0x3fff)+0x8000];
                 }
-                if(ioport[0x0c]&0x2) {  // Red
+                if(ioport[0x0c]==0x22) {  // Red
                     return vram[(address&0x3fff)+0x4000]; 
                 }
-                if(ioport[0x0c]&0x4) {  // Green
+                if(ioport[0x0c]==0x44) {  // Green
 //                    if(ioport[0xe]&0x10) {  // Read attribute 
                         lastattr=atram[address&0x3fff];
 //                    }    
                     return vram[(address&0x3fff)];
                 }
-                return 0xff;    // ?
+                return 0;
             }
 
         } 
@@ -2622,6 +2622,7 @@ static void mem_write(void *context,uint16_t address, uint8_t data)
                     }
                 }
                 if(ioport[0xc]&0x40) {  // Green
+    
                     if(ioport[0xc]&4) {
                         vram[(address&0x3fff)]=data;
                     } else {
