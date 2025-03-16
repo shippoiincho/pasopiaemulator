@@ -69,7 +69,8 @@ static inline void vsync_program_init(PIO pio, uint sm, uint offset, uint pin) {
     // Set clock division (div by 5 for 25 MHz state machine)
 //    sm_config_set_clkdiv(&c, 5) ;
 //    sm_config_set_clkdiv(&c, 8) ;
-        sm_config_set_clkdiv(&c, 9) ;
+//        sm_config_set_clkdiv(&c, 9) ;
+        sm_config_set_clkdiv(&c, 10) ;
 
     // Set this pin's GPIO function (connect PIO to the pad)
     pio_gpio_init(pio, pin);

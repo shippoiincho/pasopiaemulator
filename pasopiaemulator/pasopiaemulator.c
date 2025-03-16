@@ -8,10 +8,8 @@
 //  GP6: Audio
 
 // Select Machine
-//#define MACHINE_PA7010
-#define MACHINE_PA7007
-
-
+#define MACHINE_PA7010
+//#define MACHINE_PA7007
 
 //#define USE_FDC
 #define USE_RAMPAC
@@ -55,7 +53,7 @@
 // VGAout configuration
 
 #define DOTCLOCK 25000
-#define CLOCKMUL 9
+#define CLOCKMUL 10
 // Pico does not work at CLOCKMUL=7 (175MHz).
 
 #define VGA_PIXELS_X 640

@@ -8,7 +8,7 @@
 .program rgb
 
 ;.define CLOCKMUL 8
-.define CLOCKMUL 9
+.define CLOCKMUL 10
 
 pull block 					; Pull from FIFO to OSR (only once)
 mov y, osr 					; Copy value from OSR to y scratch register
