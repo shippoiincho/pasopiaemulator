@@ -11,7 +11,7 @@
 #define MACHINE_PA7010
 //#define MACHINE_PA7007
 
-//#define USE_FDC
+//#define USE_FDC      // NOT WORK
 #define USE_RAMPAC
 
 //#define USE_DEBUG
@@ -94,6 +94,8 @@ uint8_t color_palette[16];
 uint8_t color_palette_table[256];
 uint8_t color_mask_table[256];
 uint32_t nmi_enable_irq=0;
+uint32_t pasopia_emulate=0;
+uint32_t nmi_switch=0;
 
 #ifdef USE_RAMPAC
 uint8_t rampac[0x8000];
@@ -103,10 +105,9 @@ uint32_t renderbuffer[81];  // 80x4
 uint32_t gvrenderbuffer[81];  
 uint32_t maskbuffer[81];
 
-
-
 uint32_t pacmode=0;     // PAC 1:RAMPAC 2:KANJI 3:JOYPAC
-uint32_t pacptr=0;
+uint32_t rampacptr=0;
+uint32_t kanjipacptr=0;
 uint8_t pacload=0;
 
 static const uint8_t rampac_header[16] = {
@@ -2704,14 +2705,40 @@ static uint8_t io_read(void *context, uint16_t address)
         case 0x1a:
         case 0x1b:
 
+#if defined(MACHINE_PA7007)
+
+            if(ioport[0x1b]==4) {     // RAMPAC (Device 5)
+#ifdef USE_RAMPAC
+                if(pacload) {
+                    return rampac[rampacptr&0x7fff];
+                }
+#else
+                return 0xff;
+#endif
+            } else if(ioport[0x1b]==2) {     // KANJIPAC
+                return kanjirom[kanjipacptr&0x1ffff];
+            } else if(ioport[0x1b]==1) {     // JOYPAC
+
+                if((address&0xff)==0x1a) {  // JOYSTICK 1
+                    return gamepad_info;
+                } else {
+                    return 0xff;
+                }
+
+            } else {
+                return 0xff;
+            }
+
+#else
+
             if(pacmode==0) {
                 return 0xff;
 #ifdef USE_RAMPAC                
             } else if(pacmode==1) {     // RAMPAC
-                return rampac[pacptr&0x7fff];
+                return rampac[rampacptr&0x7fff];
 #endif
             } else if(pacmode==2) {     // KANJIPAC
-                return kanjirom[pacptr&0x1ffff];
+                return kanjirom[kanjipacptr&0x1ffff];
             } else if(pacmode==3) {     // JOYPAC
 
                 if((address&0xff)==0x1a) {  // JOYSTICK 1
@@ -2721,6 +2748,7 @@ static uint8_t io_read(void *context, uint16_t address)
                 }
 
             }
+#endif
 
             return 0xff;
 
@@ -2732,6 +2760,12 @@ static uint8_t io_read(void *context, uint16_t address)
                 b|=0x20;
             }
 
+#if defined(MACHINE_PA7007)
+
+            if(nmi_switch) b|=4;
+            if(pasopia_emulate) b|=2;
+
+#endif
             return b;
 
 
@@ -2742,7 +2776,7 @@ static uint8_t io_read(void *context, uint16_t address)
 
             if(ioport[0x3c]&1) b|=0x1;
             if(ioport[0x3c]&2) b|=0x2;
-
+            
 #else
 
             if(ioport[0x3c]&1) b|=0x80;
@@ -2825,6 +2859,7 @@ static void io_write(void *context, uint16_t address, uint8_t data)
 
     switch(address&0xff) {
 
+#if defined(MACHINE_PA7010)
         case 0: // set low byte of VRAM ptr
 
             vramptr&=0xff00;
@@ -2849,6 +2884,28 @@ static void io_write(void *context, uint16_t address, uint8_t data)
             ioport[0x0a]=data;
 
             return;
+#endif
+#if defined(MACHINE_PA7007)
+            case 0:
+            case 1:
+            case 2:
+            case 3:
+            case 8:
+            case 9:
+            case 0xa:
+            case 0xb:
+
+            ioport[address&0xff]=data;
+
+            if((ioport[0x22]&0xc0)==0x40) {
+                nmi_enable_irq=1;
+                pasopia_emulate=1;
+            }
+
+            return;
+
+#endif
+
 
 #if defined(MACHINE_PA7007)
 
@@ -2900,27 +2957,94 @@ static void io_write(void *context, uint16_t address, uint8_t data)
 
         case 0x18:  // PAC (Low)
 
-            pacptr&=0xffff00;
-            pacptr|=data;
+#if defined(MACHINE_PA7007)
+            if(ioport[0x1b]==4) {
+                rampacptr&=0xffff00;
+                rampacptr|=data;
+            } else if (ioport[0x1b]==2) {
+                kanjipacptr&=0xffff00;
+                kanjipacptr|=data;
+                            
+            }
             return;
+#else 
+            if(pacmode==1) {
+                rampacptr&=0xffff00;
+                rampacptr|=data;
+            } else if (pacmode==2) {
+                kanjipacptr&=0xffff00;
+                kanjipacptr|=data;                
+            }
+#endif
 
         case 0x19:  // PAC (Middle)
 
-            pacptr&=0xff00ff;
-            pacptr|=data<<8;
-            return;
+#if defined(MACHINE_PA7007)
+        if(ioport[0x1b]==4) {
+            rampacptr&=0xff00ff;
+            rampacptr|=data<<8;
+        } else if(ioport[0x1b]==2) {
+            kanjipacptr&=0xff00ff;
+            kanjipacptr|=data<<8;            
+        }
+        return;
+
+#else
+        if(pacmode==1) {
+            rampacptr&=0xff00ff;
+            rampacptr|=data<<8;
+        } else if(pacmode==2) {
+            kanjipacptr&=0xff00ff;
+            kanjipacptr|=data<<8;
+        }
+        return;
+#endif
 
         case 0x1a:  // PAC (High or DATA write) 
 
+#if defined(MACHINE_PA7007)
+
+            if(ioport[0x1b]==4) {
+#ifdef USE_RAMPAC
+                rampac[rampacptr&0x7fff]=data;
+#endif
+                return;
+            }
+            if(ioport[0x1b]==2) {
+                kanjipacptr&=0xffff;
+                kanjipacptr|=data<<16;  
+            }
+            return;
+
+#else
 #ifdef USE_RAMPAC
             if(pacmode==1) {
-                rampac[pacptr&0x7fff]=data;
+                rampac[rampacptr&0x7fff]=data;
                 return;
             }
 #endif 
-            pacptr&=0xffff;
-            pacptr|=data<<16;
+
+            if(pacmode==2) {
+                kanjipacptr&=0xffff;
+                kanjipacptr|=data<<16;
+            }
+
+#endif
+
             return;
+
+#if defined(MACHINE_PA7007)
+        
+        case 0x1b:  // SLOT
+
+            if((data&0x80)==0) {
+                ioport[0x1b]=data;
+            }
+
+            return;
+
+#endif
+
 
         case 0x20:  // 8255 for CMT/LPT
 
@@ -2946,9 +3070,13 @@ static void io_write(void *context, uint16_t address, uint8_t data)
                 sound_mute=0;
             }
 
+#if defined(MACHINE_PA7007)
             if(data&1) {    // RESET NMI
                 nmi_enable_irq=0;
+                nmi_switch=0;
+                pasopia_emulate=0;
             }
+#endif
 
             ioport[0x20]=data;
 
@@ -3278,6 +3406,7 @@ void init_emulator(void) {
 
 //    ioport[0x3c]=1;
     nmi_enable_irq=1;
+    nmi_switch=1;
 #endif
 
 }
@@ -3509,7 +3638,11 @@ int main() {
 
 #ifdef DRAW_ON_DEMAND 
 //        if((cpu_cycles-cpu_hsync)>1 ) { // 63us * 3.58MHz = 227
+#if defined(MACHINE_PA7007)
+        if((cpu_cycles-cpu_hsync)>232 ) { // 63us * 4MHz = 254
+#else
         if((cpu_cycles-cpu_hsync)>254 ) { // 63us * 4MHz = 254
+#endif
             while(video_hsync==0) ;
             cpu_hsync=cpu_cycles;
 //            video_hsync=0;
