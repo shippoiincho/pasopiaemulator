@@ -8,12 +8,12 @@ Toshiba PASOPIA PA-7010 および PASOPIA7 PA-7007 のエミュレータです�
 
 - メイン RAM(64KB)
 - ~~テープ~~
-- PAC2
+- PAC2 (RAMPAC/KANJIPAC/JOYOAC)
 - PSG (PASPOIA7)
 
 T-BASIC (Version 1.1) で起動を確認していますが、OA-BASIC や MINI-PASCAL の動作は未確認です。
 
-`pasopiaemulator.c` の冒頭で機種を選択してください。
+ビルドするときに `pasopiaemulator.c` の冒頭で機種を選択してください。
 
 ```
 #define MACHINE_PA7010
@@ -95,10 +95,10 @@ PASOPIA7 においては、PAC2 は自動選択されますので、RAMPAC を�
 # 制限事項
 - 20行モードの動作は未確認です
 - CRTC を制御しているソフトは正しく表示されないことがあります
-- SOUND 命令が音痴です(PA7010)
 - テープの読み込みが不安定です
-- PASPOPIA における漢字 PAC の動作は未確認です
-- PASOPIA7 における T-BASIC エミュレーションは未実装です
+- PASOPIA での SOUND 命令が音痴です
+- PASPOPIA における漢字 PAC の動作は未確認です (PASOPIA7での動作確認は取れています)
+- PASOPIA7 における T-BASIC エミュレーションが不完全です
 
 ---
 # ライセンスなど
@@ -115,5 +115,9 @@ PASOPIA7 においては、PAC2 は自動選択されますので、RAMPAC を�
 ---
 # Gallary
 
+- パソピア
 ![game 1](pictures/screenshot01.jpg)
 ![game 2](pictures/screenshot02.jpg)
+
+- パソピア7
+![PASOPIA7 Demo](pictures/screenshot03.png)

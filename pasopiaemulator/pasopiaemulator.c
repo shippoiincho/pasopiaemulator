@@ -2672,12 +2672,28 @@ static uint8_t io_read(void *context, uint16_t address)
 
     switch(address&0xff) {
 
+#if defined(MACHINE_PA7010)        
         case 0x2: // VRAM READ
-
-            // may be read control
-//        if(ioport[0xa]&0x40)
-
             return (vram[vramptr]&0xff);
+#endif
+
+#if defined(MACHINE_PA7007)
+        case 0:
+        case 1:
+        case 2:
+        case 3:
+        case 8:
+        case 0xa:
+        case 0xb:
+
+            if((ioport[0x22]&0xc0)==0x40) {
+                nmi_enable_irq=1;
+                pasopia_emulate=1;
+            }
+
+        return ioport[address&0xff];
+#endif
+
 
         case 0x9: // CRT info
 
@@ -2688,6 +2704,11 @@ static uint8_t io_read(void *context, uint16_t address)
             if(lastattr&2) b|=0x2;
             if(lastattr&1) b|=0x1;
             if(video_hsync) b|=0x8;
+            
+            if((ioport[0x22]&0xc0)==0x40) {
+                nmi_enable_irq=1;
+                pasopia_emulate=1;
+            }
 #else
             if(atram[vramptr]) b|=0x80;
             if(video_hsync) b|=0x40;
